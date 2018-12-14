@@ -14,6 +14,7 @@ import (
 	ps "gx/ipfs/QmXauCuJzmzapetmC6W4TuDJLL1yFFrVzSHoWv8YdbmnxH/go-libp2p-peerstore"
 	peer "gx/ipfs/QmZoWKhxUmZ2seW4BzX6fJkNR8hh9PsGModr7q171yq2SS/go-libp2p-peer"
 	mh "gx/ipfs/QmZyZDi491cCNTLfAhwcaDii2Kg4pwKRkhqQzURGDvY6ua/go-multihash"
+	"gx/ipfs/QmaPbCnUMBohSGo3KnxEa2bHqyJVVeEEcwtqJAYxerieBo/go-libp2p-crypto"
 	cid "gx/ipfs/QmcZfnkapfECQGcLZaf9B79NRg7cRa9EnZh4LSbkCzwNvY/go-cid"
 	"io/ioutil"
 	"net/http"
@@ -2299,10 +2300,10 @@ func (i *jsonAPIHandler) POSTReleaseEscrow(w http.ResponseWriter, r *http.Reques
 }
 
 func (i *jsonAPIHandler) POSTSignMessage(w http.ResponseWriter, r *http.Request) {
-	type ipfsmessage struct {
+	type plaintext struct {
 		Content string `json:"content"`
 	}
-	var msg ipfsmessage
+	var msg plaintext
 	decoder := json.NewDecoder(r.Body)
 	err := decoder.Decode(&msg)
 	if err != nil {
@@ -2317,6 +2318,34 @@ func (i *jsonAPIHandler) POSTSignMessage(w http.ResponseWriter, r *http.Request)
 	}
 
 	SanitizedResponse(w, fmt.Sprintf(`{"signature": "%s"}`, base64.URLEncoding.EncodeToString(sig)))
+}
+
+func (i *jsonAPIHandler) POSTVerifyMessage(w http.ResponseWriter, r *http.Request) {
+	type ciphertext struct {
+		Content   string `json:"content"`
+		Signature string `json:"signature"`
+		Pubkey    string `json:"pubkey"`
+	}
+	var msg ciphertext
+	decoder := json.NewDecoder(r.Body)
+	err := decoder.Decode(&msg)
+	if err != nil {
+		ErrorResponse(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	pubkey, err := crypto.UnmarshalPublicKey([]byte(msg.Pubkey))
+	if err != nil {
+		ErrorResponse(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	_, err = pubkey.Verify([]byte(msg.Content), []byte(msg.Signature))
+	if err != nil {
+		ErrorResponse(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	SanitizedResponse(w, `{}`)
 }
 
 func (i *jsonAPIHandler) POSTChat(w http.ResponseWriter, r *http.Request) {
