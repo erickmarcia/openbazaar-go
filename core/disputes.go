@@ -4,8 +4,9 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
-	libp2p "gx/ipfs/QmPvyPwuCgJ7pDmrKDxRtsScJgBaM5h4EpRL2qQJsmXf4n/go-libp2p-crypto"
-	"gx/ipfs/QmTRhk7cgjUf2gfQ3p2M9KPECNZEW9XUrmHcFCgog4cPgB/go-libp2p-peer"
+	dht "gx/ipfs/QmRaVcGchmC1stHHK7YhcgEuTk5k1JiGS568pfYWMgT91H/go-libp2p-kad-dht"
+	peer "gx/ipfs/QmZoWKhxUmZ2seW4BzX6fJkNR8hh9PsGModr7q171yq2SS/go-libp2p-peer"
+	libp2p "gx/ipfs/QmaPbCnUMBohSGo3KnxEa2bHqyJVVeEEcwtqJAYxerieBo/go-libp2p-crypto"
 	"strconv"
 	"sync"
 	"time"
@@ -47,48 +48,24 @@ func (n *OpenBazaarNode) OpenDispute(orderID string, contract *pb.RicardianContr
 	if !n.VerifyEscrowFundsAreDisputable(contract, records) {
 		return ErrOpenFailureOrderExpired
 	}
-	var isPurchase bool
-	if n.IpfsNode.Identity.Pretty() == contract.BuyerOrder.BuyerID.PeerID {
-		isPurchase = true
-	}
 
-	dispute := new(pb.Dispute)
-
-	// Create timestamp
-	ts, err := ptypes.TimestampProto(time.Now())
+	dispute, err := GetFreshDispute()
 	if err != nil {
 		return err
 	}
-	dispute.Timestamp = ts
 
-	// Add claim
 	dispute.Claim = claim
+	dispute.Outpoints = GetRecordOutpoints(records)
 
-	// Create outpoints
-	var outpoints []*pb.Outpoint
-	for _, r := range records {
-		o := new(pb.Outpoint)
-		o.Hash = r.Txid
-		o.Index = r.Index
-		o.Value = uint64(r.Value)
-		outpoints = append(outpoints, o)
-	}
-	dispute.Outpoints = outpoints
-
-	wal, err := n.Multiwallet.WalletForCurrencyCode(contract.BuyerOrder.Payment.Coin)
+	dispute.PayoutAddress, err = n.GetPayoutAddress(contract.BuyerOrder.Payment.Coin)
 	if err != nil {
 		return err
 	}
 
-	// Add payout address
-	dispute.PayoutAddress = wal.CurrentAddress(wallet.EXTERNAL).EncodeAddress()
-
-	// Serialize contract
-	ser, err := proto.Marshal(contract)
+	dispute.SerializedContract, err = GetSerializedContract(contract)
 	if err != nil {
 		return err
 	}
-	dispute.SerializedContract = ser
 
 	// Sign dispute
 	rc := new(pb.RicardianContract)
@@ -109,17 +86,20 @@ func (n *OpenBazaarNode) OpenDispute(orderID string, contract *pb.RicardianContr
 	// Send to counterparty
 	var counterparty string
 	var counterkey libp2p.PubKey
+
+	isPurchase := n.IsMyPeerID(contract.BuyerOrder.BuyerID.PeerID)
+
 	if isPurchase {
 		counterparty = contract.VendorListings[0].VendorID.PeerID
 		counterkey, err = libp2p.UnmarshalPublicKey(contract.VendorListings[0].VendorID.Pubkeys.Identity)
 		if err != nil {
-			return nil
+			return err
 		}
 	} else {
 		counterparty = contract.BuyerOrder.BuyerID.PeerID
 		counterkey, err = libp2p.UnmarshalPublicKey(contract.BuyerOrder.BuyerID.Pubkeys.Identity)
 		if err != nil {
-			return nil
+			return err
 		}
 	}
 	err = n.SendDisputeOpen(counterparty, &counterkey, rc)
@@ -134,6 +114,56 @@ func (n *OpenBazaarNode) OpenDispute(orderID string, contract *pb.RicardianContr
 		n.Datastore.Sales().Put(orderID, *contract, pb.OrderState_DISPUTED, true)
 	}
 	return nil
+}
+
+func GetSerializedContract(contract *pb.RicardianContract) ([]byte, error) {
+	ser, err := proto.Marshal(contract)
+	if err != nil {
+		return nil, err
+	}
+	return ser, nil
+}
+
+func (n *OpenBazaarNode) GetPayoutAddress(coinType string) (string, error) {
+	wal, err := n.Multiwallet.WalletForCurrencyCode(coinType)
+	if err != nil {
+		return "", err
+	}
+
+	// Add payout address
+	return wal.CurrentAddress(wallet.EXTERNAL).EncodeAddress(), nil
+}
+
+func GetRecordOutpoints(records []*wallet.TransactionRecord) []*pb.Outpoint {
+	var outpoints []*pb.Outpoint
+	for _, r := range records {
+		o := new(pb.Outpoint)
+		o.Hash = r.Txid
+		o.Index = r.Index
+		o.Value = uint64(r.Value)
+		outpoints = append(outpoints, o)
+	}
+	return outpoints
+}
+
+func (n *OpenBazaarNode) IsMyPeerID(peerID string) bool {
+	if n.IpfsNode.Identity.Pretty() == peerID {
+		return true
+	}
+	return false
+}
+
+func GetFreshDispute() (*pb.Dispute, error) {
+	dispute := new(pb.Dispute)
+
+	// Create timestamp
+	ts, err := ptypes.TimestampProto(time.Now())
+	if err != nil {
+		return nil, err
+	}
+	dispute.Timestamp = ts
+
+	return dispute, nil
 }
 
 func (n *OpenBazaarNode) VerifyEscrowFundsAreDisputable(contract *pb.RicardianContract, records []*wallet.TransactionRecord) bool {
