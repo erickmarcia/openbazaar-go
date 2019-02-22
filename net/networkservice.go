@@ -10,8 +10,8 @@ import (
 )
 
 var (
-	OutOfOrderMessage error = errors.New("Message arrived out of order")
-	DuplicateMessage  error = errors.New("Duplicate Message")
+	OutOfOrderMessage error = errors.New("message arrived out of order")
+	DuplicateMessage  error = errors.New("duplicate Message")
 )
 
 type NetworkService interface {
